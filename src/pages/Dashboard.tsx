@@ -1,12 +1,13 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { toast, Toaster } from 'sonner';
-import { Plus, Pencil, Trash2, Package, Tag, Phone, Mail, ImageIcon } from 'lucide-react';
+import { Plus, Pencil, Trash2, Package, Tag, Phone, Mail, ImageIcon, Upload, Loader2, Sparkles } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import { de } from 'date-fns/locale';
 
 import type { Kategorien, MarktplatzAngebote } from '@/types/app';
 import { LivingAppsService, extractRecordId, createRecordUrl } from '@/services/livingAppsService';
 import { APP_IDS } from '@/types/app';
+import { analyzeProductImage, fileToBase64 } from '@/services/imageAnalysisService';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -63,6 +64,9 @@ interface AngebotDialogProps {
 function AngebotDialog({ open, onOpenChange, angebot, kategorien, onSuccess }: AngebotDialogProps) {
   const isEditing = !!angebot;
   const [submitting, setSubmitting] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [formData, setFormData] = useState({
     hersteller: '',
     modell: '',
@@ -108,9 +112,53 @@ function AngebotDialog({ open, onOpenChange, angebot, kategorien, onSuccess }: A
           kontakt_email: '',
           kontakt_telefon: '',
         });
+        setImagePreview(null);
       }
     }
   }, [open, angebot]);
+
+  async function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Show preview immediately
+    const previewUrl = URL.createObjectURL(file);
+    setImagePreview(previewUrl);
+
+    // Analyze with AI
+    setAnalyzing(true);
+    const loadingToastId = toast.loading('Foto wird analysiert...');
+
+    try {
+      const { base64, mediaType } = await fileToBase64(file);
+      const productInfo = await analyzeProductImage(base64, mediaType);
+
+      // Auto-fill form fields (only fill empty fields or all if creating new)
+      setFormData((prev) => ({
+        ...prev,
+        hersteller: productInfo.hersteller || prev.hersteller,
+        modell: productInfo.modell || prev.modell,
+        farbe: productInfo.farbe || prev.farbe,
+        groesse: productInfo.groesse || prev.groesse,
+        produktbeschreibung: productInfo.produktbeschreibung || prev.produktbeschreibung,
+        preis: productInfo.preis || prev.preis,
+      }));
+
+      toast.dismiss(loadingToastId);
+      toast.success('Produktinfos aus Foto erkannt!', {
+        description: productInfo.hersteller
+          ? `${productInfo.hersteller}${productInfo.modell ? ' ' + productInfo.modell : ''} erkannt`
+          : 'Einige Felder wurden automatisch ausgefüllt',
+      });
+    } catch (err) {
+      toast.dismiss(loadingToastId);
+      toast.error('Foto-Analyse fehlgeschlagen', {
+        description: 'Bitte fülle die Felder manuell aus.',
+      });
+    } finally {
+      setAnalyzing(false);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -156,6 +204,58 @@ function AngebotDialog({ open, onOpenChange, angebot, kategorien, onSuccess }: A
           <DialogTitle>{isEditing ? 'Angebot bearbeiten' : 'Neues Angebot erstellen'}</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Photo Upload with AI Analysis */}
+          <div className="space-y-2">
+            <Label>Produktfoto</Label>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleImageUpload}
+            />
+            {imagePreview ? (
+              <div className="relative">
+                <img
+                  src={imagePreview}
+                  alt="Vorschau"
+                  className="w-full h-48 object-cover rounded-lg border"
+                />
+                {analyzing && (
+                  <div className="absolute inset-0 bg-background/80 rounded-lg flex flex-col items-center justify-center gap-2">
+                    <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                    <span className="text-sm font-medium">KI analysiert Foto...</span>
+                  </div>
+                )}
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="absolute top-2 right-2"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={analyzing}
+                >
+                  Ändern
+                </Button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="w-full h-36 border-2 border-dashed border-border rounded-lg flex flex-col items-center justify-center gap-2 hover:bg-muted/50 transition-colors cursor-pointer"
+              >
+                <div className="flex items-center gap-2 text-primary">
+                  <Sparkles className="h-5 w-5" />
+                  <Upload className="h-5 w-5" />
+                </div>
+                <span className="text-sm font-medium">Foto hochladen</span>
+                <span className="text-xs text-muted-foreground">
+                  KI erkennt automatisch Hersteller, Modell, Farbe & mehr
+                </span>
+              </button>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="hersteller">Hersteller *</Label>
